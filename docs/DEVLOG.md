@@ -161,3 +161,30 @@ Safe Tool Foundation と Single-user Calendar Study をコードにする。
   `python -m family_ai.cli` を実際に動かす
 - 小さいモデルが JSON プロトコルと日時変換をどこまで守れるか観察し、
   必要なら few-shot 例を system prompt に追加する
+
+---
+
+# 2026-09-01 — 実 LLM での動作確認 (Windows + Ollama + qwen3:8b)
+
+## What I Did
+
+Windows 側にレポジトリをクローンし、Ollama (qwen3:8b) で REPL を確認。
+登録 → 確認 (y/N) → 検索の MVP シナリオが動作した。
+
+構成メモ: WSL から Windows 側 Ollama への接続は `OLLAMA_HOST=0.0.0.0` と
+IP 指定が必要になるため、Windows 側で完結させた (localhost で接続可)。
+アプリ制御ポリシーで venv の exe ラッパーがブロックされるため、
+`python -m pytest` のように `-m` 形式で実行する。
+
+## What I Learned
+
+- qwen3:8b は JSON プロトコル・日時変換 (「来週」→ 9/8-14) を正しく守れた
+- 「今週病院ある？」に対し `query="病院"` で検索して「歯医者」を
+  見落とした。query は文字列一致でしかなく、カテゴリの意味判断は
+  SQL 側ではできない。「期間だけで検索し、絞り込みは LLM が結果を
+  見て行う」よう system prompt にルールを追加した
+
+## Next
+
+- prompt 修正後に同じシナリオを再確認
+- Phase 0 Baseline (GPU / VRAM / tok/s) を EXPERIMENTS.md に記録
