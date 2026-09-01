@@ -111,3 +111,53 @@ LLMがToolを提案することと、そのToolを実行する権限があるこ
 ## Next
 
 Phase 0のBaselineを実機情報で埋め、固定promptによる最初の測定を行う。
+
+---
+
+# 2026-09-01 — Study Mode 実装 (Phase 3-4 + Phase 2 アプリ側)
+
+## Goal
+
+Safe Tool Foundation と Single-user Calendar Study をコードにする。
+
+## What I Did
+
+開発環境 (exe.dev VM) に GPU / Ollama がないため、GPU 実験 (Phase 0-1) は
+自宅 PC に残し、コードで進められる部分を先に実装した。Python 3.12、
+標準ライブラリのみ (テストは pytest)。
+
+- `src/family_ai/llm.py` — Ollama クライアント (timeout / 切断 / HTTP エラーを
+  `LLMUnavailable` に集約)、テスト用 `FakeLLM`、LLM 出力の厳格 parser
+- `src/family_ai/tools.py` — Tool allowlist、schema validation
+  (型・必須・文字列長・ISO 8601)、余分な引数の拒否、結果件数上限
+- `src/family_ai/calendar_tools.py` — get/add/update/delete_event、
+  undo_last、論理削除、idempotency key、household_id での分離
+- `src/family_ai/agent.py` — canonical request flow (proposal → validation →
+  confirmation → execution → result filtering → audit)、ラウンド上限
+- `src/family_ai/cli.py` — Terminal REPL (`python -m family_ai.cli`)
+- `tests/` — 40 tests。壊れた JSON / 未知 Tool / 型違いの拒否、
+  CRUD + undo + idempotency、FakeLLM での MVP シナリオ end-to-end
+
+## What I Learned
+
+- conversation state を LLM server に持たせず messages リストとして
+  アプリ側で管理すると、履歴の長さ制限や分離を自分で制御できる
+- idempotency key や actor_user_id を「LLM の引数」ではなく
+  「Gateway が渡す実行時パラメータ」として型レベルで分けると、
+  Server-owned Arguments の原則がコードに現れる
+- undo は変更前 snapshot (`changes.prev_json`) を残す方式が最も単純。
+  create の undo は論理削除と同じ操作になる
+
+## Problem
+
+- Tool の実行時間は計測して監査に残すのみで、hard timeout は未実装
+  (SQLite ローカル実行のみなので Study Mode では許容)
+- 日時の自然言語解釈 (「来週」など) は LLM 任せ。小さいモデルで
+  どの程度正確か未検証
+
+## Next
+
+- 自宅 PC で Phase 0 Baseline を記録し、Ollama + qwen3:8b などで
+  `python -m family_ai.cli` を実際に動かす
+- 小さいモデルが JSON プロトコルと日時変換をどこまで守れるか観察し、
+  必要なら few-shot 例を system prompt に追加する
