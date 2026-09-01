@@ -120,8 +120,8 @@ Ollamaとllama.cppが抽象化している処理を理解し、アプリケー�
 - [ ] Ollamaとllama.cppを比較
 - [ ] Local HTTP Serverを起動
 - [ ] curlとPythonまたはTypeScriptから呼び出す
-- [ ] timeout、切断、モデル停止時のエラーを処理
-- [ ] conversation stateをアプリケーション側で管理
+- [x] timeout、切断、モデル停止時のエラーを処理 (`src/family_ai/llm.py`)
+- [x] conversation stateをアプリケーション側で管理 (`src/family_ai/agent.py`)
 - [ ] concurrent requestを測定
 
 ## Non-Goals
@@ -162,11 +162,11 @@ Sanitized Result
 
 ## Tasks
 
-- [ ] Tool allowlistと厳格な入出力schema
-- [ ] 不明なToolと余分な引数の拒否
-- [ ] 文字列長、取得件数、実行時間の上限
-- [ ] timeoutと安全なエラー応答
-- [ ] Tool呼び出しの監査記録
+- [x] Tool allowlistと厳格な入出力schema (`src/family_ai/tools.py`)
+- [x] 不明なToolと余分な引数の拒否
+- [x] 文字列長、取得件数、実行時間の上限 (実行時間は計測のみ。hard kill は未実装)
+- [x] timeoutと安全なエラー応答
+- [x] Tool呼び出しの監査記録 (`audit_events`、本文は保存しない)
 
 ## Exit Criteria
 
@@ -187,10 +187,13 @@ Study Modeで自然言語から予定を登録・検索する。
 
 ## Features
 
-- [ ] `get_events`
-- [ ] `add_event`
-- [ ] `update_event`
-- [ ] `delete_event`
+- [x] `get_events`
+- [x] `add_event`
+- [x] `update_event`
+- [x] `delete_event`
+
+(実装: `src/family_ai/calendar_tools.py`。undo_last / idempotency / 論理削除を含む。
+テストは FakeLLM で通過済み。実 LLM での動作確認は自宅 PC + Ollama で行う)
 
 ## Safety
 

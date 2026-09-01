@@ -175,6 +175,21 @@ SQLite
 
 ---
 
+## Getting Started (Study Mode)
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+# テスト (LLM 不要)
+.venv/bin/pytest
+
+# Ollama が動いているマシンで REPL を起動
+.venv/bin/python -m family_ai.cli --model qwen3:8b --db study.db
+```
+
+---
+
 ## Project Roadmap
 
 詳細は以下。
