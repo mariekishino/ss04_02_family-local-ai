@@ -299,6 +299,8 @@ default は予定登録、ON/OFF は「9月10日の予定を教えて」に対�
 | 06:27:26 / OFF 検索 | 応答形式の解釈に失敗 | 5.3833 | 2 | 0 |
 | 06:27:49 / OFF 同一会話で再質問 | 予定名を返答、時刻は省略 | 2.6958 | 1 | 0 |
 | 06:38:16 / OFF 新規会話・診断追加後 | 2回目 invalid_json、出力39文字 | 7.4092 | 2 | 0 |
+| 時刻未取得 / OFF・失敗本文表示 | 日時・予定名を含む通常の日本語で返答、JSONではなく失敗 | 7.34 | 2 | ログ未取得 |
+| 06:46:15 / OFF + schema | 成功、予定名と14:00を返答 | 5.3190 | 2 | 0 |
 
 呼び出し別の内訳（時間は秒、tokens は生成トークン数）。
 
@@ -313,6 +315,8 @@ default は予定登録、ON/OFF は「9月10日の予定を教えて」に対�
 | OFF 再質問 / 1 | 0.0088 | 0.3545 | 0.2118 | 31 | 40 | 0.6461 | 2.6956 |
 | OFF 診断追加後 / 1 | 2.3942 | 0.1222 | 0.4755 | 66 | 0 | 3.0031 | 5.0354 |
 | OFF 診断追加後 / 2 | 0.0062 | 0.0724 | 0.1901 | 28 | 40 | 0.3067 | 2.3687 |
+| OFF + schema / 1 | 0.0046 | 0.2040 | 0.4680 | 66 | 38 | 0.7571 | 2.7947 |
+| OFF + schema / 2 | 0.0054 | 0.1950 | 0.2343 | 32 | 41 | 0.4713 | 2.5221 |
 
 観測と解釈:
 
@@ -356,7 +360,7 @@ parse_error は `code`、LLM の呼び出し回 `round`（1始まり）、出力
 
 ### 次の比較：プロンプトでの形式指定と API の出力形式指定
 
-`invalid_json` の再発を受け、以下の任意オプションを追加した。実機検証はこれから。
+`invalid_json` の再発を受け、以下の任意オプションを追加した。実機での予備結果は下記。
 
 - `--debug-output`: parse 失敗時の `message.content` を画面に表示（最大8000文字）。
   改行や制御文字は JSON 文字列としてエスケープ。本文は metrics や audit には保存しない。
@@ -380,9 +384,42 @@ git pull --ff-only
 ```
 
 条件はログの `structured_output` で識別する。`done_reason` が API から返れば呼び出しごとに記録する。
-形式が守られても日時や回答内容の正確さは別途確認する。ユーザーの Ollama version は未確認であり、
-この schema の実機対応・成功率はまだ確かめていない。
+形式が守られても日時や回答内容の正確さは別途確認する。ユーザーの Ollama version は未確認。
 [Ollama Structured Outputs](https://docs.ollama.com/capabilities/structured-outputs) を参照。
+
+予備結果:
+
+- 形式指定なしでは、2回目に通常の日本語の返答（39文字）が出ていた。
+  予定名・9月10日・14時という内容は合っていたが、アプリが期待する Reply JSON に包まれていなかった。
+- `--structured-output` ありでは `outcome: reply`、`parse_error: null` で成功。
+  両呼び出しの思考文字数は0、`done_reason: stop`。今回の質問では、思考 OFF のまま
+  API の形式制約を使って正しい予定と時刻を返せた。一般的な成功率はまだ未測定。
+- 5.3190秒の処理に対し、Ollama total は合計1.2284秒。
+  ロード0.0100秒、入力処理0.3990秒、生成0.7023秒、生成トークン数98。
+  client と Ollama total の差は合計4.0883秒（全体の約77%）。
+  形式制約による成功は確認できたが、約2秒/呼び出しの待ち時間は残る。
+
+### 次の比較：localhost と 127.0.0.1
+
+`urllib` が接続に使うホスト名・アドレスの違いで、約2秒の差が変わるかを確認する。
+Python の `socket.create_connection` はホスト名に対して IPv4 / IPv6 のアドレスを解決し、
+接続できるまで候補を試すため、アドレス選択や接続の待ち時間が仮説の1つになる。
+Windows のプロキシ設定なども関係し得るため、IPv6 や DNS が原因とはまだ断定しない。
+[Python socket](https://docs.python.org/3.11/library/socket.html#socket.create_connection)、
+[urllib.request](https://docs.python.org/3.11/library/urllib.request.html#urllib.request.getproxies) を参照。
+
+まず既存 CLI のオプションだけで、同じ OFF + schema、同じ DB、同じ質問を新規会話で試す。
+
+```powershell
+.\.venv\Scripts\python.exe -m family_ai.cli --model qwen3:8b --db study.db --think off --structured-output --debug-output --ollama-url http://127.0.0.1:11434 --metrics latency-off-schema-ipv4.jsonl
+```
+
+返答後に exit し、`Get-Content .\latency-off-schema-ipv4.jsonl -Tail 1` で記録を確認する。
+見るのは全体時間だけでなく、呼び出しごとの `client_seconds - total_duration / 1e9`。
+ロード・入力処理・生成時間と、予定名・時刻・形式の正しさも併せて確認する。
+短縮した場合は、次に `--ollama-url http://localhost:11434` を明示して戻す比較を行う。
+これまでのログには接続先がなく、CLI の既定 localhost は環境変数 OLLAMA_URL で上書き可能なため、
+接続先を明示した条件間で再現性を確認してから判断する。
 
 ## 参考資料
 
