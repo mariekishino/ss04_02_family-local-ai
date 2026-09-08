@@ -29,6 +29,10 @@ class LLMUnavailable(Exception):
 class ProposalParseError(Exception):
     """LLM 出力を提案として解釈できない。実行してはならない。"""
 
+    def __init__(self, message: str, *, code: str = "invalid_output") -> None:
+        super().__init__(message)
+        self.code = code
+
 
 @dataclass(frozen=True)
 class Reply:
@@ -56,7 +60,7 @@ def parse_llm_output(text: str) -> Reply | ToolCall:
     それ以外の逸脱はすべて ProposalParseError。
     """
     if len(text) > MAX_OUTPUT_CHARS:
-        raise ProposalParseError("LLM 出力が長すぎます")
+        raise ProposalParseError("LLM 出力が長すぎます", code="output_too_long")
     stripped = text.strip()
     m = _FENCE_RE.match(stripped)
     if m:
@@ -64,23 +68,24 @@ def parse_llm_output(text: str) -> Reply | ToolCall:
     try:
         obj = json.loads(stripped)
     except json.JSONDecodeError as e:
-        raise ProposalParseError(f"JSON として解釈できません: {e}") from None
+        raise ProposalParseError(f"JSON として解釈できません: {e}",
+                                 code="invalid_json") from None
     if not isinstance(obj, dict):
-        raise ProposalParseError("JSON object ではありません")
+        raise ProposalParseError("JSON object ではありません", code="not_object")
 
     kind = obj.get("type")
     if kind == "reply":
         if not isinstance(obj.get("text"), str):
-            raise ProposalParseError("reply に text がありません")
+            raise ProposalParseError("reply に text がありません", code="invalid_reply_text")
         return Reply(text=obj["text"])
     if kind == "tool_call":
         if not isinstance(obj.get("tool"), str):
-            raise ProposalParseError("tool_call に tool 名がありません")
+            raise ProposalParseError("tool_call に tool 名がありません", code="invalid_tool_name")
         args = obj.get("arguments", {})
         if not isinstance(args, dict):
-            raise ProposalParseError("arguments は object にしてください")
+            raise ProposalParseError("arguments は object にしてください", code="invalid_arguments")
         return ToolCall(tool=obj["tool"], arguments=args)
-    raise ProposalParseError(f"不明な type です: {kind!r}")
+    raise ProposalParseError(f"不明な type です: {kind!r}", code="unknown_type")
 
 
 class LLMClient(Protocol):

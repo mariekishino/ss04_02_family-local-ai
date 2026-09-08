@@ -4,7 +4,8 @@ from io import BytesIO
 
 import pytest
 
-from family_ai.llm import OllamaClient, LLMUnavailable
+from family_ai.llm import OllamaClient, LLMUnavailable, MAX_OUTPUT_CHARS
+from family_ai.agent import SAFE_PARSE_FAIL
 from test_agent import make_agent, tool_call, reply
 
 
@@ -64,3 +65,28 @@ def test_agent_metrics_separate_confirmation_and_reset(conn, ctx, registry, monk
     assert agent.last_metrics['llm_calls'] == 1
     assert agent.last_metrics['confirmation_seconds'] == 0
     assert agent.last_metrics['tool_seconds'] == 0
+
+
+@pytest.mark.parametrize('raw, code', [
+    ('appointment details', 'invalid_json'),
+    ('[]', 'not_object'),
+    ('{"type": "reply", "text": 123}', 'invalid_reply_text'),
+    ('{"type": "tool_call"}', 'invalid_tool_name'),
+    ('{"type": "tool_call", "tool": "get_events", "arguments": []}', 'invalid_arguments'),
+    ('{"type": "appointment details"}', 'unknown_type'),
+    ('x' * (MAX_OUTPUT_CHARS + 1), 'output_too_long'),
+])
+def test_parse_failure_after_search_is_measured_without_body(conn, ctx, registry, raw, code):
+    agent = make_agent(conn, ctx, registry, [
+        tool_call('get_events'), raw, reply('ok'),
+    ])
+    assert agent.handle('search') == SAFE_PARSE_FAIL
+    assert agent.last_metrics['outcome'] == 'parse_error'
+    assert agent.last_metrics['parse_error'] == {
+        'code': code, 'round': 2, 'output_chars': len(raw),
+    }
+    assert 'appointment details' not in json.dumps(agent.last_metrics)
+    assert any('tool_result' in message['content'] for message in agent.messages)
+    agent.handle('retry')
+    assert agent.last_metrics['outcome'] == 'reply'
+    assert agent.last_metrics['parse_error'] is None

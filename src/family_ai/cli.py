@@ -79,6 +79,10 @@ def main(argv: list[str] | None = None) -> int:
                   f"LLM {m['llm_calls']}回 {m['llm_seconds']:.2f}s / "
                   f"Tool {m['tool_seconds']:.3f}s / "
                   f"確認待ち {m['confirmation_seconds']:.2f}s")
+            if m["parse_error"]:
+                error = m["parse_error"]
+                print(f"[形式エラー] LLM {error['round']}回目 / "
+                      f"{error['code']} / 出力 {error['output_chars']}文字")
     conn.close()
     return 0
 

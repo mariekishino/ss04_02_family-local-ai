@@ -125,7 +125,8 @@ class Agent:
         """ユーザー入力 1 件を処理して応答テキストを返す。"""
         started = perf_counter()
         self.last_metrics = {"llm_calls": 0, "llm_seconds": 0.0,
-                             "tool_seconds": 0.0, "confirmation_seconds": 0.0}
+                             "tool_seconds": 0.0, "confirmation_seconds": 0.0,
+                             "outcome": "error", "parse_error": None}
         try:
             return self._handle(user_text)
         finally:
@@ -157,16 +158,23 @@ class Agent:
                 finally:
                     self.last_metrics["llm_seconds"] += perf_counter() - started
             except LLMUnavailable:
+                self.last_metrics["outcome"] = "llm_error"
                 self._audit("llm.chat", None, "error")
                 return SAFE_LLM_DOWN
 
             try:
                 proposal = parse_llm_output(raw)
-            except ProposalParseError:
+            except ProposalParseError as e:
+                self.last_metrics["outcome"] = "parse_error"
+                self.last_metrics["parse_error"] = {
+                    "code": e.code, "round": _round + 1,
+                    "output_chars": len(raw),
+                }
                 self._audit("llm.parse", None, "error")
                 return SAFE_PARSE_FAIL
 
             if isinstance(proposal, Reply):
+                self.last_metrics["outcome"] = "reply"
                 self.messages.append({"role": "assistant", "content": raw})
                 return proposal.text
 
@@ -187,6 +195,7 @@ class Agent:
                 finally:
                     self.last_metrics["confirmation_seconds"] += perf_counter() - started
                 if not confirmed:
+                    self.last_metrics["outcome"] = "cancelled"
                     self._audit(f"tool.{proposal.tool}", None, "denied")
                     return SAFE_CANCELLED
 
@@ -218,4 +227,5 @@ class Agent:
             })
 
         self._audit("agent.rounds_exhausted", None, "error")
+        self.last_metrics["outcome"] = "rounds_exhausted"
         return SAFE_PARSE_FAIL
