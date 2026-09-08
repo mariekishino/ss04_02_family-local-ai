@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from time import perf_counter
 from collections.abc import Callable
 from datetime import datetime
 
@@ -30,6 +31,7 @@ from .context import RequestContext
 from .llm import (
     LLMClient,
     LLMUnavailable,
+    MAX_OUTPUT_CHARS,
     ProposalParseError,
     Reply,
     ToolCall,
@@ -45,7 +47,7 @@ SAFE_PARSE_FAIL = "応答をうまく解釈できませんでした。もう一�
 SAFE_CANCELLED = "操作をキャンセルしました。"
 
 
-def build_system_prompt(registry: ToolRegistry) -> str:
+def build_system_prompt(registry: ToolRegistry, *, now: datetime | None = None) -> str:
     tool_lines = []
     for spec in registry.specs():
         params = ", ".join(
@@ -55,11 +57,11 @@ def build_system_prompt(registry: ToolRegistry) -> str:
             for name, p in spec.params.items()
         ) or "引数なし"
         tool_lines.append(f"- {spec.name}: {spec.description} [{params}]")
-    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    prompt_time = now if now is not None else datetime.now().astimezone()
     tools_text = "\n".join(tool_lines)
     return (
         "あなたは家族の予定を管理するアシスタントです。\n"
-        f"現在日時: {now}\n\n"
+        f"現在日時: {prompt_time.isoformat(timespec='seconds')}\n\n"
         "必ず次のどちらかの JSON object を 1 個だけ出力してください。"
         "JSON 以外の文章を出力してはいけません。\n"
         '1. 返答: {"type": "reply", "text": "..."}\n'
@@ -87,13 +89,20 @@ class Agent:
         conn: sqlite3.Connection,
         ctx: RequestContext,
         confirm: Callable[[str], bool],
+        capture_failed_output: bool = False,
+        fixed_prompt_time: datetime | None = None,
     ) -> None:
         self.llm = llm
         self.registry = registry
         self.conn = conn
         self.ctx = ctx
         self.confirm = confirm
+        self.capture_failed_output = capture_failed_output
+        # Cache experiments only: keep Tool execution and database clocks unchanged.
+        self.fixed_prompt_time = fixed_prompt_time
+        self.last_failed_output: str | None = None
         self.messages: list[dict[str, str]] = []
+        self.last_metrics: dict = {}
 
     # -------------------------------------------------------------- helpers
 
@@ -109,7 +118,10 @@ class Agent:
         )
 
     def _chat_messages(self) -> list[dict[str, str]]:
-        system = {"role": "system", "content": build_system_prompt(self.registry)}
+        system = {
+            "role": "system",
+            "content": build_system_prompt(self.registry, now=self.fixed_prompt_time),
+        }
         # 履歴は直近のみ渡す (context 長の管理はアプリケーション側の責務)
         return [system, *self.messages[-MAX_HISTORY_MESSAGES:]]
 
@@ -121,6 +133,21 @@ class Agent:
 
     def handle(self, user_text: str) -> str:
         """ユーザー入力 1 件を処理して応答テキストを返す。"""
+        started = perf_counter()
+        self.last_failed_output = None
+        self.last_metrics = {"llm_calls": 0, "llm_seconds": 0.0,
+                             "tool_seconds": 0.0, "confirmation_seconds": 0.0,
+                             "outcome": "error", "parse_error": None}
+        try:
+            return self._handle(user_text)
+        finally:
+            elapsed = perf_counter() - started
+            self.last_metrics["total_seconds"] = elapsed
+            self.last_metrics["processing_seconds"] = (
+                elapsed - self.last_metrics["confirmation_seconds"]
+            )
+
+    def _handle(self, user_text: str) -> str:
         self.messages.append({"role": "user", "content": user_text})
         feedback: str | None = None  # validation エラー等を LLM へ戻す
 
@@ -135,18 +162,32 @@ class Agent:
                 })
                 feedback = None
             try:
-                raw = self.llm.chat(self._chat_messages())
+                self.last_metrics["llm_calls"] += 1
+                started = perf_counter()
+                try:
+                    raw = self.llm.chat(self._chat_messages())
+                finally:
+                    self.last_metrics["llm_seconds"] += perf_counter() - started
             except LLMUnavailable:
+                self.last_metrics["outcome"] = "llm_error"
                 self._audit("llm.chat", None, "error")
                 return SAFE_LLM_DOWN
 
             try:
                 proposal = parse_llm_output(raw)
-            except ProposalParseError:
+            except ProposalParseError as e:
+                if self.capture_failed_output:
+                    self.last_failed_output = raw[:MAX_OUTPUT_CHARS]
+                self.last_metrics["outcome"] = "parse_error"
+                self.last_metrics["parse_error"] = {
+                    "code": e.code, "round": _round + 1,
+                    "output_chars": len(raw),
+                }
                 self._audit("llm.parse", None, "error")
                 return SAFE_PARSE_FAIL
 
             if isinstance(proposal, Reply):
+                self.last_metrics["outcome"] = "reply"
                 self.messages.append({"role": "assistant", "content": raw})
                 return proposal.text
 
@@ -161,15 +202,25 @@ class Agent:
 
             spec = self.registry.get(proposal.tool)
             if spec.requires_confirmation:
-                if not self.confirm(self._describe(proposal, args)):
+                started = perf_counter()
+                try:
+                    confirmed = self.confirm(self._describe(proposal, args))
+                finally:
+                    self.last_metrics["confirmation_seconds"] += perf_counter() - started
+                if not confirmed:
+                    self.last_metrics["outcome"] = "cancelled"
                     self._audit(f"tool.{proposal.tool}", None, "denied")
                     return SAFE_CANCELLED
 
             try:
-                result = self.registry.execute(
-                    self.ctx, self.conn, proposal.tool, args,
-                    idempotency_key=str(uuid.uuid4()),
-                )
+                started = perf_counter()
+                try:
+                    result = self.registry.execute(
+                        self.ctx, self.conn, proposal.tool, args,
+                        idempotency_key=str(uuid.uuid4()),
+                    )
+                finally:
+                    self.last_metrics["tool_seconds"] += perf_counter() - started
             except ToolError as e:
                 self._audit(f"tool.{proposal.tool}", None, "error")
                 feedback = str(e)
@@ -189,4 +240,5 @@ class Agent:
             })
 
         self._audit("agent.rounds_exhausted", None, "error")
+        self.last_metrics["outcome"] = "rounds_exhausted"
         return SAFE_PARSE_FAIL
