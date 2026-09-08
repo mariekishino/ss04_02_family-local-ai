@@ -161,3 +161,57 @@ Safe Tool Foundation と Single-user Calendar Study をコードにする。
   `python -m family_ai.cli` を実際に動かす
 - 小さいモデルが JSON プロトコルと日時変換をどこまで守れるか観察し、
   必要なら few-shot 例を system prompt に追加する
+
+---
+
+# 2026-09-01 — 実 LLM での動作確認 (Windows + Ollama + qwen3:8b)
+
+## What I Did
+
+Windows 側にレポジトリをクローンし、Ollama (qwen3:8b) で REPL を確認。
+登録 → 確認 (y/N) → 検索の MVP シナリオが動作した。
+
+構成メモ: WSL から Windows 側 Ollama への接続は `OLLAMA_HOST=0.0.0.0` と
+IP 指定が必要になるため、Windows 側で完結させた (localhost で接続可)。
+アプリ制御ポリシーで venv の exe ラッパーがブロックされるため、
+`python -m pytest` のように `-m` 形式で実行する。
+
+## What I Learned
+
+- qwen3:8b は JSON プロトコル・日時変換 (「来週」→ 9/8-14) を正しく守れた
+- 「今週病院ある？」に対し `query="病院"` で検索して「歯医者」を
+  見落とした。query は文字列一致でしかなく、カテゴリの意味判断は
+  SQL 側ではできない。「期間だけで検索し、絞り込みは LLM が結果を
+  見て行う」よう system prompt にルールを追加した
+
+## Next
+
+- prompt 修正後に同じシナリオを再確認
+- Phase 0 Baseline (GPU / VRAM / tok/s) を EXPERIMENTS.md に記録
+
+---
+
+# 2026-09-08 — 応答遅延の検証計画
+
+## Context
+
+ユーザーから前回の実機確認について補足: Ollama + qwen3:8b で登録・検索は
+動作したが、応答が遅かった。`ollama ps` は `100% GPU` と表示されていた。
+今回は機能追加より先に、遅延の内訳を検証するところから再開する。
+
+## What I Did / Learned
+
+- 現行コードの非ストリーミング受信、`think` 未指定、LLM 呼び出しごとの
+  system prompt 内の現在日時更新を確認した。
+- `ollama ps` の `100% GPU` はモデルの配置を示すため、GPU 性能が原因ではないとは断定しない。
+- 思考生成、プロンプトキャッシュの再利用、表示待ち、複数回の LLM 呼び出しを
+  切り分ける計画を [EXPERIMENTS.md](EXPERIMENTS.md#experiment-06--calendar-agent-の応答遅延) に記録した。
+- キャッシュが毎回すべて無効になるか、思考が遅延の主因かは未検証。
+  今回は文書の追記のみで、計測実装・実機測定はまだ行っていない。
+
+## Next
+
+1. LLM 呼び出しごとの性能指標と Agent 全体の時間を計測できるようにする。
+2. 自宅 PC で環境・固定入力・履歴・テスト用 DB を記録し、現状と思考 ON/OFF を比較する。
+3. 日時固定/更新、ストリーミング ON/OFF を順に比較し、結果から改善の優先順位を決める。
+4. 速度と合わせて JSON・日時変換・「病院→歯医者」の検索品質を確認する。
