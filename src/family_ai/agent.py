@@ -47,7 +47,7 @@ SAFE_PARSE_FAIL = "応答をうまく解釈できませんでした。もう一�
 SAFE_CANCELLED = "操作をキャンセルしました。"
 
 
-def build_system_prompt(registry: ToolRegistry) -> str:
+def build_system_prompt(registry: ToolRegistry, *, now: datetime | None = None) -> str:
     tool_lines = []
     for spec in registry.specs():
         params = ", ".join(
@@ -57,11 +57,11 @@ def build_system_prompt(registry: ToolRegistry) -> str:
             for name, p in spec.params.items()
         ) or "引数なし"
         tool_lines.append(f"- {spec.name}: {spec.description} [{params}]")
-    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    prompt_time = now if now is not None else datetime.now().astimezone()
     tools_text = "\n".join(tool_lines)
     return (
         "あなたは家族の予定を管理するアシスタントです。\n"
-        f"現在日時: {now}\n\n"
+        f"現在日時: {prompt_time.isoformat(timespec='seconds')}\n\n"
         "必ず次のどちらかの JSON object を 1 個だけ出力してください。"
         "JSON 以外の文章を出力してはいけません。\n"
         '1. 返答: {"type": "reply", "text": "..."}\n'
@@ -90,6 +90,7 @@ class Agent:
         ctx: RequestContext,
         confirm: Callable[[str], bool],
         capture_failed_output: bool = False,
+        fixed_prompt_time: datetime | None = None,
     ) -> None:
         self.llm = llm
         self.registry = registry
@@ -97,6 +98,8 @@ class Agent:
         self.ctx = ctx
         self.confirm = confirm
         self.capture_failed_output = capture_failed_output
+        # Cache experiments only: keep Tool execution and database clocks unchanged.
+        self.fixed_prompt_time = fixed_prompt_time
         self.last_failed_output: str | None = None
         self.messages: list[dict[str, str]] = []
         self.last_metrics: dict = {}
@@ -115,7 +118,10 @@ class Agent:
         )
 
     def _chat_messages(self) -> list[dict[str, str]]:
-        system = {"role": "system", "content": build_system_prompt(self.registry)}
+        system = {
+            "role": "system",
+            "content": build_system_prompt(self.registry, now=self.fixed_prompt_time),
+        }
         # 履歴は直近のみ渡す (context 長の管理はアプリケーション側の責務)
         return [system, *self.messages[-MAX_HISTORY_MESSAGES:]]
 

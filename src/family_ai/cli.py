@@ -26,6 +26,22 @@ def confirm_tty(summary: str) -> bool:
     return answer in ("y", "yes")
 
 
+def parse_prompt_time(value: str) -> datetime:
+    """Accept an ISO 8601 timestamp with an explicit timezone, also on Python 3.10."""
+    iso_value = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(iso_value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            "Use an ISO 8601 datetime with timezone, e.g. 2026-09-08T16:00:00+09:00"
+        ) from e
+    if parsed.utcoffset() is None:
+        raise argparse.ArgumentTypeError(
+            "Timezone is required, e.g. 2026-09-08T16:00:00+09:00"
+        )
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Family Local AI (Study Mode)")
     parser.add_argument(
@@ -45,6 +61,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Send the reply/tool-call JSON schema to Ollama")
     parser.add_argument("--debug-output", action="store_true",
                         help="Display failed response content (up to 8000 chars); not written to metrics")
+    parser.add_argument("--fixed-prompt-time", type=parse_prompt_time,
+                        help="Experiment only: fix the system prompt time to an ISO 8601 datetime "
+                             "with timezone; Tool and database clocks are unchanged")
     args = parser.parse_args(argv)
 
     conn = db.connect(args.db)
@@ -58,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         ctx=study_context(),
         confirm=confirm_tty,
         capture_failed_output=args.debug_output,
+        fixed_prompt_time=args.fixed_prompt_time,
     )
 
     print(f"Family Local AI — Study Mode (model={args.model}, db={args.db})")
@@ -82,6 +102,10 @@ def main(argv: list[str] | None = None) -> int:
             record = {"timestamp": datetime.now(timezone.utc).isoformat(),
                       "model": args.model, "think": args.think, "stream": False,
                       "structured_output": args.structured_output,
+                      "fixed_prompt_time": (
+                          args.fixed_prompt_time.isoformat(timespec="seconds")
+                          if args.fixed_prompt_time is not None else None
+                      ),
                       "agent": agent.last_metrics, "calls": llm.measurements}
             with open(args.metrics, "a", encoding="utf-8") as output:
                 output.write(json.dumps(record, ensure_ascii=False) + "\n")
