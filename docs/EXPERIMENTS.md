@@ -248,6 +248,43 @@ Ollama の duration はナノ秒。生成 tok/s は `eval_count / eval_duration 
 
 ## 結果と判断（実測後に記入）
 
+### 最初の実機測定手順（2026-09-08 計測実装）
+
+CLI に `--think default|on|off` と `--metrics FILE` を追加した。
+`default` は従来と同じく API に think を指定しない。
+JSONL は入力1件につき1行追記し、予定本文・入力文・思考本文は保存しない。
+入力・履歴・DB の再現用 fixture は別途管理する。
+
+Windows のプロジェクトディレクトリで、仮想環境の Python を使用する。
+
+```powershell
+python -m pytest -q
+ollama --version
+ollama list
+nvidia-smi
+
+# まず従来設定で時間の内訳を確認
+python -m family_ai.cli --model qwen3:8b --db study.db --think default --metrics latency-default.jsonl
+
+# 比較時は各プロセスを exit で終了してから次を起動
+python -m family_ai.cli --model qwen3:8b --db study.db --think on --metrics latency-on.jsonl
+python -m family_ai.cli --model qwen3:8b --db study.db --think off --metrics latency-off.jsonl
+```
+
+最初は同じテスト予定が入った DB に対して「今週病院ある？」を使用し、
+返答内容と JSONL の各呼び出しを確認する。検索だけなら DB の予定は変わらない。
+各プロセスの最初の質問を比較すれば会話履歴を揃えられる。
+同じセッションで質問を繰り返すと履歴が増えるので、同一条件の反復とは扱わない。
+初回ロードありの結果を記録後、モデルがロードされた状態でも複数回測定する。
+
+これは現状把握と think 比較のための計測。日時は現状どおり更新されるため、
+入力処理の差も確認し、全体時間の差をすべて思考の影響と断定しない。
+日時固定とストリーミング比較は後続の検証で実装する。
+
+`agent.processing_seconds` は確認待ちを除く処理時間、`calls` は各 LLM 呼び出しの
+性能指標。クライアントと Agent の時間は秒、Ollama の `*_duration` はナノ秒。
+画面への表示時間・JSONL 保存時間は Agent の処理時間に含まない。
+
 | 条件 / 試行数 | 全体時間 p50 / p95 | LLM 回数 | 入力処理時間 | 生成時間 / tokens | 表示開始時間 | 品質 |
 |---|---|---|---|---|---|---|
 | 未測定 | — | — | — | — | — | — |

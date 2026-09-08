@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import json
+from datetime import datetime, timezone
 
 from . import db
 from .agent import Agent
@@ -37,11 +39,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Ollama base URL (env: OLLAMA_URL)",
     )
     parser.add_argument("--db", default="study.db", help="SQLite file path")
+    parser.add_argument("--think", choices=("default", "on", "off"), default="default")
+    parser.add_argument("--metrics", help="Append timing records to this JSONL file")
     args = parser.parse_args(argv)
 
     conn = db.connect(args.db)
+    llm = OllamaClient(model=args.model, base_url=args.ollama_url,
+                       think={"default": None, "on": True, "off": False}[args.think])
     agent = Agent(
-        llm=OllamaClient(model=args.model, base_url=args.ollama_url),
+        llm=llm,
         registry=build_registry(),
         conn=conn,
         ctx=study_context(),
@@ -60,7 +66,19 @@ def main(argv: list[str] | None = None) -> int:
             continue
         if text in ("exit", "quit"):
             break
+        llm.measurements.clear()
         print(agent.handle(text))
+        if args.metrics:
+            record = {"timestamp": datetime.now(timezone.utc).isoformat(),
+                      "model": args.model, "think": args.think, "stream": False,
+                      "agent": agent.last_metrics, "calls": llm.measurements}
+            with open(args.metrics, "a", encoding="utf-8") as output:
+                output.write(json.dumps(record, ensure_ascii=False) + "\n")
+            m = agent.last_metrics
+            print(f"[計測] 処理 {m['processing_seconds']:.2f}s / "
+                  f"LLM {m['llm_calls']}回 {m['llm_seconds']:.2f}s / "
+                  f"Tool {m['tool_seconds']:.3f}s / "
+                  f"確認待ち {m['confirmation_seconds']:.2f}s")
     conn.close()
     return 0
 

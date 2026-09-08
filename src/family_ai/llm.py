@@ -17,6 +17,7 @@ import json
 import re
 import urllib.error
 import urllib.request
+from time import perf_counter
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -94,30 +95,48 @@ class OllamaClient:
         model: str,
         base_url: str = "http://localhost:11434",
         timeout_sec: float = 120.0,
+        think: bool | None = None,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
+        self.think = think
+        self.measurements: list[dict[str, Any]] = []
 
     def chat(self, messages: list[dict[str, str]]) -> str:
-        payload = json.dumps({
+        request_body = {
             "model": self.model,
             "messages": messages,
             "stream": False,
             "options": {"temperature": 0.2},
-        }).encode()
+        }
+        if self.think is not None:
+            request_body["think"] = self.think
+        payload = json.dumps(request_body).encode()
         req = urllib.request.Request(
             f"{self.base_url}/api/chat",
             data=payload,
             headers={"Content-Type": "application/json"},
         )
+        started = perf_counter()
+        measurement: dict[str, Any] = {"status": "error", "think": self.think}
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
                 body = json.loads(resp.read().decode())
+                for key in ("total_duration", "load_duration", "prompt_eval_duration",
+                            "eval_duration", "prompt_eval_count", "eval_count",
+                            "prompt_eval_cached_count"):
+                    measurement[key] = body.get(key)
+                thinking = body.get("message", {}).get("thinking", "")
+                measurement["thinking_chars"] = len(thinking or "")
+                measurement["status"] = "ok"
         except urllib.error.HTTPError as e:
             raise LLMUnavailable(f"LLM server error: HTTP {e.code}") from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise LLMUnavailable(f"LLM server unreachable: {e}") from e
+        finally:
+            measurement["client_seconds"] = perf_counter() - started
+            self.measurements.append(measurement)
         try:
             return body["message"]["content"]
         except (KeyError, TypeError) as e:

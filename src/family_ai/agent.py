@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from time import perf_counter
 from collections.abc import Callable
 from datetime import datetime
 
@@ -94,6 +95,7 @@ class Agent:
         self.ctx = ctx
         self.confirm = confirm
         self.messages: list[dict[str, str]] = []
+        self.last_metrics: dict = {}
 
     # -------------------------------------------------------------- helpers
 
@@ -121,6 +123,19 @@ class Agent:
 
     def handle(self, user_text: str) -> str:
         """ユーザー入力 1 件を処理して応答テキストを返す。"""
+        started = perf_counter()
+        self.last_metrics = {"llm_calls": 0, "llm_seconds": 0.0,
+                             "tool_seconds": 0.0, "confirmation_seconds": 0.0}
+        try:
+            return self._handle(user_text)
+        finally:
+            elapsed = perf_counter() - started
+            self.last_metrics["total_seconds"] = elapsed
+            self.last_metrics["processing_seconds"] = (
+                elapsed - self.last_metrics["confirmation_seconds"]
+            )
+
+    def _handle(self, user_text: str) -> str:
         self.messages.append({"role": "user", "content": user_text})
         feedback: str | None = None  # validation エラー等を LLM へ戻す
 
@@ -135,7 +150,12 @@ class Agent:
                 })
                 feedback = None
             try:
-                raw = self.llm.chat(self._chat_messages())
+                self.last_metrics["llm_calls"] += 1
+                started = perf_counter()
+                try:
+                    raw = self.llm.chat(self._chat_messages())
+                finally:
+                    self.last_metrics["llm_seconds"] += perf_counter() - started
             except LLMUnavailable:
                 self._audit("llm.chat", None, "error")
                 return SAFE_LLM_DOWN
@@ -161,15 +181,24 @@ class Agent:
 
             spec = self.registry.get(proposal.tool)
             if spec.requires_confirmation:
-                if not self.confirm(self._describe(proposal, args)):
+                started = perf_counter()
+                try:
+                    confirmed = self.confirm(self._describe(proposal, args))
+                finally:
+                    self.last_metrics["confirmation_seconds"] += perf_counter() - started
+                if not confirmed:
                     self._audit(f"tool.{proposal.tool}", None, "denied")
                     return SAFE_CANCELLED
 
             try:
-                result = self.registry.execute(
-                    self.ctx, self.conn, proposal.tool, args,
-                    idempotency_key=str(uuid.uuid4()),
-                )
+                started = perf_counter()
+                try:
+                    result = self.registry.execute(
+                        self.ctx, self.conn, proposal.tool, args,
+                        idempotency_key=str(uuid.uuid4()),
+                    )
+                finally:
+                    self.last_metrics["tool_seconds"] += perf_counter() - started
             except ToolError as e:
                 self._audit(f"tool.{proposal.tool}", None, "error")
                 feedback = str(e)
