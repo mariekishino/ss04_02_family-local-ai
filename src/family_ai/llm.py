@@ -48,6 +48,28 @@ class ToolCall:
 MAX_OUTPUT_CHARS = 8000
 _FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
+# The model selects a proposal; ToolRegistry still validates tool names and arguments.
+OUTPUT_SCHEMA = {
+    "anyOf": [
+        {
+            "type": "object",
+            "properties": {"type": {"const": "reply"}, "text": {"type": "string"}},
+            "required": ["type", "text"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "type": {"const": "tool_call"},
+                "tool": {"type": "string"},
+                "arguments": {"type": "object", "additionalProperties": True},
+            },
+            "required": ["type", "tool", "arguments"],
+            "additionalProperties": False,
+        },
+    ],
+}
+
 
 def parse_llm_output(text: str) -> Reply | ToolCall:
     """LLM の生出力を Reply か ToolCall に変換する。
@@ -101,11 +123,13 @@ class OllamaClient:
         base_url: str = "http://localhost:11434",
         timeout_sec: float = 120.0,
         think: bool | None = None,
+        structured_output: bool = False,
     ) -> None:
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.timeout_sec = timeout_sec
         self.think = think
+        self.structured_output = structured_output
         self.measurements: list[dict[str, Any]] = []
 
     def chat(self, messages: list[dict[str, str]]) -> str:
@@ -117,6 +141,8 @@ class OllamaClient:
         }
         if self.think is not None:
             request_body["think"] = self.think
+        if self.structured_output:
+            request_body["format"] = OUTPUT_SCHEMA
         payload = json.dumps(request_body).encode()
         req = urllib.request.Request(
             f"{self.base_url}/api/chat",
@@ -124,13 +150,14 @@ class OllamaClient:
             headers={"Content-Type": "application/json"},
         )
         started = perf_counter()
-        measurement: dict[str, Any] = {"status": "error", "think": self.think}
+        measurement: dict[str, Any] = {"status": "error", "think": self.think,
+                                       "structured_output": self.structured_output}
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
                 body = json.loads(resp.read().decode())
                 for key in ("total_duration", "load_duration", "prompt_eval_duration",
                             "eval_duration", "prompt_eval_count", "eval_count",
-                            "prompt_eval_cached_count"):
+                            "prompt_eval_cached_count", "done_reason"):
                     measurement[key] = body.get(key)
                 thinking = body.get("message", {}).get("thinking", "")
                 measurement["thinking_chars"] = len(thinking or "")

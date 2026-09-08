@@ -31,6 +31,7 @@ from .context import RequestContext
 from .llm import (
     LLMClient,
     LLMUnavailable,
+    MAX_OUTPUT_CHARS,
     ProposalParseError,
     Reply,
     ToolCall,
@@ -88,12 +89,15 @@ class Agent:
         conn: sqlite3.Connection,
         ctx: RequestContext,
         confirm: Callable[[str], bool],
+        capture_failed_output: bool = False,
     ) -> None:
         self.llm = llm
         self.registry = registry
         self.conn = conn
         self.ctx = ctx
         self.confirm = confirm
+        self.capture_failed_output = capture_failed_output
+        self.last_failed_output: str | None = None
         self.messages: list[dict[str, str]] = []
         self.last_metrics: dict = {}
 
@@ -124,6 +128,7 @@ class Agent:
     def handle(self, user_text: str) -> str:
         """ユーザー入力 1 件を処理して応答テキストを返す。"""
         started = perf_counter()
+        self.last_failed_output = None
         self.last_metrics = {"llm_calls": 0, "llm_seconds": 0.0,
                              "tool_seconds": 0.0, "confirmation_seconds": 0.0,
                              "outcome": "error", "parse_error": None}
@@ -165,6 +170,8 @@ class Agent:
             try:
                 proposal = parse_llm_output(raw)
             except ProposalParseError as e:
+                if self.capture_failed_output:
+                    self.last_failed_output = raw[:MAX_OUTPUT_CHARS]
                 self.last_metrics["outcome"] = "parse_error"
                 self.last_metrics["parse_error"] = {
                     "code": e.code, "round": _round + 1,

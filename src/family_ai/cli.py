@@ -41,17 +41,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default="study.db", help="SQLite file path")
     parser.add_argument("--think", choices=("default", "on", "off"), default="default")
     parser.add_argument("--metrics", help="Append timing records to this JSONL file")
+    parser.add_argument("--structured-output", action="store_true",
+                        help="Send the reply/tool-call JSON schema to Ollama")
+    parser.add_argument("--debug-output", action="store_true",
+                        help="Display failed response content (up to 8000 chars); not written to metrics")
     args = parser.parse_args(argv)
 
     conn = db.connect(args.db)
     llm = OllamaClient(model=args.model, base_url=args.ollama_url,
-                       think={"default": None, "on": True, "off": False}[args.think])
+                       think={"default": None, "on": True, "off": False}[args.think],
+                       structured_output=args.structured_output)
     agent = Agent(
         llm=llm,
         registry=build_registry(),
         conn=conn,
         ctx=study_context(),
         confirm=confirm_tty,
+        capture_failed_output=args.debug_output,
     )
 
     print(f"Family Local AI — Study Mode (model={args.model}, db={args.db})")
@@ -68,9 +74,14 @@ def main(argv: list[str] | None = None) -> int:
             break
         llm.measurements.clear()
         print(agent.handle(text))
+        if args.debug_output and agent.last_failed_output is not None:
+            # Escape newlines and terminal control characters; never persist response text.
+            print("[失敗出力・最大8000文字] "
+                  + json.dumps(agent.last_failed_output, ensure_ascii=False))
         if args.metrics:
             record = {"timestamp": datetime.now(timezone.utc).isoformat(),
                       "model": args.model, "think": args.think, "stream": False,
+                      "structured_output": args.structured_output,
                       "agent": agent.last_metrics, "calls": llm.measurements}
             with open(args.metrics, "a", encoding="utf-8") as output:
                 output.write(json.dumps(record, ensure_ascii=False) + "\n")
